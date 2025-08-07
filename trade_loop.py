@@ -1,0 +1,95 @@
+import time
+import os
+from dotenv import load_dotenv
+from datetime import datetime
+from binance_api import get_price, place_market_order, place_sl_tp_orders
+from trade_bot import TradeBot, TradeSignal  # ⚠️ Ensure TradeSignal is importable
+from trade_logger import TradeLogger
+
+DEBUG_MODE = True  # 👈 Turn OFF after testing
+
+# === Load env vars ===
+load_dotenv()
+
+# === Configs ===
+TRADE_SYMBOL = os.getenv("TRADE_SYMBOL", "BTCUSDT")
+LEVERAGE = int(os.getenv("LEVERAGE", 10))
+RISK_USDT = float(os.getenv("RISK_USDT", 10))
+TP_USDT = float(os.getenv("TP_USDT", 15))
+
+# === Initialize bot and logger ===
+bot = TradeBot(symbol=TRADE_SYMBOL, threshold=0.66)
+logger = TradeLogger("data/trade_log.json")
+open_trades = []
+
+print("🔁 trade_loop.py started. Running live every 60s...")
+
+while True:
+    try:
+        # === 1. Update candles and check signal ===
+        bot.refresh_candles()
+        signal = bot.generate_signal()
+
+        # === DEBUG: Inject dummy signal if none ===
+        if DEBUG_MODE and signal is None:
+            print("[DEBUG] Injecting fake signal for test...")
+            current_price = get_price(TRADE_SYMBOL)
+            signal = TradeSignal(
+                direction="LONG",
+                entry_price=current_price,
+                stop_loss=current_price * 0.98,
+                take_profit=current_price * 1.02,
+                probability=0.99,
+                timestamp=datetime.utcnow()
+            )
+
+        # === PATCH: bypass model filter only if fake signal
+        allow_trade = True if DEBUG_MODE and signal and signal.probability >= 0.99 else logger.is_model_allowed("long")
+
+        if signal and allow_trade:
+            entry_price = signal.entry_price
+            sl_price = signal.stop_loss
+            tp_price = signal.take_profit
+            prob = signal.probability
+
+            order = place_market_order(TRADE_SYMBOL, "BUY", RISK_USDT)
+            if order:
+                open_trades.append({
+                    "id": datetime.utcnow().isoformat(),
+                    "entry": entry_price,
+                    "sl": sl_price,
+                    "tp": tp_price,
+                    "symbol": TRADE_SYMBOL,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "prob": prob
+                })
+                place_sl_tp_orders(
+                    symbol=TRADE_SYMBOL,
+                    position_side="LONG",
+                    entry_price=entry_price,
+                    stop_loss=sl_price,
+                    take_profit=tp_price
+                )
+                print(f"✅ LONG placed @ {entry_price:.2f} | SL={sl_price:.2f} | TP={tp_price:.2f}")
+        else:
+            print("⛔ No valid signal or model filtered out.")
+
+        # === 2. Monitor SL/TP ===
+        new_open_trades = []
+        current_price = get_price(TRADE_SYMBOL)
+        for trade in open_trades:
+            if current_price >= trade['tp']:
+                print(f"🏁 TP hit: {current_price:.2f}")
+                logger.log_trade(datetime.utcnow(), "long", "LONG", "win", TP_USDT, trade['prob'])
+            elif current_price <= trade['sl']:
+                print(f"💀 SL hit: {current_price:.2f}")
+                logger.log_trade(datetime.utcnow(), "long", "LONG", "loss", -RISK_USDT, trade['prob'])
+            else:
+                new_open_trades.append(trade)
+
+        open_trades = new_open_trades
+
+    except Exception as e:
+        print("[ERROR]", e)
+
+    time.sleep(60)
