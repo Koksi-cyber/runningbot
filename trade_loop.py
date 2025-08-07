@@ -3,10 +3,10 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 from binance_api import get_price, place_market_order, place_sl_tp_orders
-from trade_bot import TradeBot, TradeSignal  # ⚠️ Ensure TradeSignal is importable
+from trade_bot import TradeBot
 from trade_logger import TradeLogger
 
-DEBUG_MODE = True  # 👈 Turn OFF after testing
+  # 👈 Turn OFF after testing
 
 # === Load env vars ===
 load_dotenv()
@@ -30,29 +30,13 @@ while True:
         bot.refresh_candles()
         signal = bot.generate_signal()
 
-        # === DEBUG: Inject dummy signal if none ===
-        if DEBUG_MODE and signal is None:
-            print("[DEBUG] Injecting fake signal for test...")
-            current_price = get_price(TRADE_SYMBOL)
-            signal = TradeSignal(
-                direction="LONG",
-                entry_price=current_price,
-                stop_loss=current_price * 0.98,
-                take_profit=current_price * 1.02,
-                probability=0.99,
-                timestamp=datetime.utcnow()
-            )
-
-        # === PATCH: bypass model filter only if fake signal
-        allow_trade = True if DEBUG_MODE and signal and signal.probability >= 0.99 else logger.is_model_allowed("long")
-
-        if signal and allow_trade:
+        if signal and logger.is_model_allowed("long"):
             entry_price = signal.entry_price
             sl_price = signal.stop_loss
             tp_price = signal.take_profit
             prob = signal.probability
 
-            order = place_market_order(TRADE_SYMBOL, "BUY", RISK_USDT)
+            order = place_market_order(TRADE_SYMBOL, "BUY", RISK_USDT, leverage=LEVERAGE)
             if order:
                 open_trades.append({
                     "id": datetime.utcnow().isoformat(),
